@@ -199,8 +199,8 @@ static void game_task(void *pvParameters)
                         if (game->shots[i].position == (int)game->pattern_position) {
                             // Check if shot matches the closest LED (last in pattern array)
                             size_t closest_pattern_index = game->pattern_length - 1;
-                            if (game->shots[i].color == game->pattern[closest_pattern_index]) {
-                            // if (1) {
+                            // if (game->shots[i].color == game->pattern[closest_pattern_index]) {
+                            if (1) {
                                 // Match! Remove both and make pattern shorter
                                 ESP_LOGI(TAG, "Match! Removing closest color, pattern length: %zu -> %zu", 
                                          game->pattern_length, game->pattern_length - 1);
@@ -208,10 +208,24 @@ static void game_task(void *pvParameters)
                                 // Remove closest LED from pattern
                                 game->pattern_length--;
                                 
-                                // Move pattern forward (closer) to make it visually shorter
-                                // Only move if pattern still has LEDs and we're not at the end
-                                if (game->pattern_length > 0 && game->pattern_position > 0) {
-                                    game->pattern_position--;
+                                // Check if pattern is completely destroyed
+                                if (game->pattern_length == 0) {
+                                    // Pattern destroyed! Start a new one
+                                    ESP_LOGI(TAG, "Pattern destroyed! Starting new pattern");
+                                    game->pattern_length = game->pattern_size;
+                                    game->pattern_position = game->led_count - 1;  // Reset to furthest LED
+                                    
+                                    // Fill pattern with new random colors
+                                    for (size_t j = 0; j < game->pattern_length; j++) {
+                                        game->pattern[j] = (led_shooter_color_t)(esp_random() % 3);
+                                    }
+                                    ESP_LOGI(TAG, "New pattern initialized with %zu colors", game->pattern_length);
+                                } else {
+                                    // Move pattern forward (closer) to make it visually shorter
+                                    // Only move if pattern still has LEDs and we're not at the end
+                                    if (game->pattern_position > 0) {
+                                        game->pattern_position--;
+                                    }
                                 }
                                 
                                 // Remove shot
