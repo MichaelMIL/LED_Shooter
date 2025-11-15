@@ -86,6 +86,18 @@ esp_err_t led_shooter_game_start(led_shooter_game_handle_t game);
  */
 esp_err_t led_shooter_game_stop(led_shooter_game_handle_t game);
 
+/**
+ * @brief Trigger a shot programmatically
+ *
+ * @param game Game handle
+ * @param color Color of the shot to fire
+ * @return
+ *      - ESP_OK: Success
+ *      - ESP_ERR_INVALID_ARG: Invalid argument
+ *      - ESP_ERR_NO_MEM: No available shot slots
+ */
+esp_err_t led_shooter_game_trigger_shot(led_shooter_game_handle_t game, led_shooter_color_t color);
+
 #ifdef __cplusplus
 }
 #endif

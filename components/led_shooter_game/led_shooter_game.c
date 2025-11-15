@@ -199,8 +199,8 @@ static void game_task(void *pvParameters)
                         if (game->shots[i].position == (int)game->pattern_position) {
                             // Check if shot matches the closest LED (last in pattern array)
                             size_t closest_pattern_index = game->pattern_length - 1;
-                            // if (game->shots[i].color == game->pattern[closest_pattern_index]) {
-                            if (1) {
+                            if (game->shots[i].color == game->pattern[closest_pattern_index]) {
+                            // if (1) {
                                 // Match! Remove both and make pattern shorter
                                 ESP_LOGI(TAG, "Match! Removing closest color, pattern length: %zu -> %zu", 
                                          game->pattern_length, game->pattern_length - 1);
@@ -457,5 +457,34 @@ esp_err_t led_shooter_game_stop(led_shooter_game_handle_t game)
     
     ESP_LOGI(TAG, "Game stopped");
     return ESP_OK;
+}
+
+esp_err_t led_shooter_game_trigger_shot(led_shooter_game_handle_t game, led_shooter_color_t color)
+{
+    if (game == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    
+    if (color == LED_SHOOTER_COLOR_NONE || color >= 3) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    
+    if (!game->running) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    
+    // Find an empty slot for the shot
+    for (size_t i = 0; i < MAX_SHOTS; i++) {
+        if (game->shots[i].position == -1) {
+            game->shots[i].color = color;
+            game->shots[i].position = 0;  // Start from closest LED (position 0)
+            game->active_shots++;
+            ESP_LOGI(TAG, "Shot triggered programmatically: color %d (active shots: %zu)", color, game->active_shots);
+            return ESP_OK;
+        }
+    }
+    
+    ESP_LOGW(TAG, "No available shot slots");
+    return ESP_ERR_NO_MEM;
 }
 
