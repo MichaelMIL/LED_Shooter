@@ -108,6 +108,17 @@ esp_err_t led_shooter_game_trigger_shot(led_shooter_game_handle_t game, led_shoo
  */
 esp_err_t led_shooter_game_reset(led_shooter_game_handle_t game);
 
+/**
+ * @brief Get current game level
+ *
+ * @param game Game handle
+ * @param level Pointer to store the level
+ * @return
+ *      - ESP_OK: Success
+ *      - ESP_ERR_INVALID_ARG: Invalid argument
+ */
+esp_err_t led_shooter_game_get_level(led_shooter_game_handle_t game, uint32_t *level);
+
 #ifdef __cplusplus
 }
 #endif

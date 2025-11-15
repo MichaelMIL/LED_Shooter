@@ -17,6 +17,7 @@
 static const char *TAG = "led_shooter_game";
 
 #define PATTERN_SIZE_DEFAULT 10
+#define PATTERN_SIZE_MAX 50  // Maximum pattern size (for array allocation)
 #define PATTERN_MOVE_INTERVAL_MS_DEFAULT 1000
 #define SHOT_SPEED_MS_DEFAULT 300
 #define BRIGHTNESS_DEFAULT 255
@@ -38,8 +39,14 @@ struct led_shooter_game_t {
     uint32_t shot_speed_ms;
     uint8_t brightness;
     
+    // Level system
+    uint32_t level;
+    size_t base_pattern_size;      // Base pattern size for level 1
+    uint32_t base_pattern_speed_ms; // Base pattern speed for level 1
+    uint32_t base_shot_speed_ms;    // Base shot speed for level 1
+    
     // Game state
-    led_shooter_color_t pattern[PATTERN_SIZE_DEFAULT];
+    led_shooter_color_t pattern[PATTERN_SIZE_MAX];
     size_t pattern_length;
     size_t pattern_position;  // Position of pattern start (furthest LED)
     
@@ -69,6 +76,48 @@ static void get_color_rgb(led_shooter_color_t color, uint8_t *r, uint8_t *g, uin
     *r = color_rgb[color][0];
     *g = color_rgb[color][1];
     *b = color_rgb[color][2];
+}
+
+/**
+ * @brief Calculate pattern size for a given level
+ * Pattern size increases by 1 per level, capped at PATTERN_SIZE_MAX
+ */
+static size_t calculate_pattern_size_for_level(size_t base_size, uint32_t level)
+{
+    if (level <= 1) {
+        return base_size;
+    }
+    // Increase by 1 per level, but cap at maximum array size
+    size_t calculated = base_size + (level - 1);
+    return (calculated > PATTERN_SIZE_MAX) ? PATTERN_SIZE_MAX : calculated;
+}
+
+/**
+ * @brief Calculate pattern move speed for a given level
+ * Every 5 levels, decrease interval by 10ms (pattern moves faster)
+ */
+static uint32_t calculate_pattern_speed_for_level(uint32_t base_speed_ms, uint32_t level)
+{
+    if (level <= 1) {
+        return base_speed_ms;
+    }
+    // Every 5 levels, decrease by 10ms (minimum 50ms)
+    uint32_t level_groups = (level - 1) / 5;
+    uint32_t calculated = base_speed_ms - (level_groups * 10);
+    return (calculated < 50) ? 50 : calculated;
+}
+
+/**
+ * @brief Update game parameters based on current level
+ */
+static void update_game_parameters_for_level(led_shooter_game_handle_t game)
+{
+    game->pattern_size = calculate_pattern_size_for_level(game->base_pattern_size, game->level);
+    game->pattern_move_interval_ms = calculate_pattern_speed_for_level(game->base_pattern_speed_ms, game->level);
+    // Shot speed remains constant (not affected by level)
+    game->shot_speed_ms = game->base_shot_speed_ms;
+    ESP_LOGI(TAG, "Level %lu: pattern_size=%zu, pattern_speed=%lu ms, shot_speed=%lu ms",
+             game->level, game->pattern_size, game->pattern_move_interval_ms, game->shot_speed_ms);
 }
 
 /**
@@ -180,8 +229,7 @@ static void game_task(void *pvParameters)
         // Move all active shots towards pattern
         if (now - last_shot_move >= pdMS_TO_TICKS(game->shot_speed_ms)) {
             // First pass: move all shots and check for collisions
-            // Store pattern state at the start to avoid race conditions
-            size_t current_pattern_position = game->pattern_position;
+            // Store pattern length at the start to avoid race conditions
             size_t current_pattern_length = game->pattern_length;
             
             // Move all shots first
@@ -201,8 +249,9 @@ static void game_task(void *pvParameters)
             // Second pass: process all collisions using the stored pattern state
             // This ensures all shots hitting at the same time are checked against the same pattern
             // Use current game pattern_position (may have changed) for collision detection
+            // Note: current_pattern_length may be updated during this loop, so we check game->pattern_length too
             for (size_t i = 0; i < MAX_SHOTS; i++) {
-                if (game->shots[i].position >= 0 && current_pattern_length > 0) {
+                if (game->shots[i].position >= 0 && game->pattern_length > 0) {
                     // Check if shot reached the pattern
                     // Pattern fills from furthest to closest, so closest LED is at pattern_position
                     // Pattern array: pattern[0] is furthest, pattern[pattern_length-1] is closest
@@ -229,24 +278,47 @@ static void game_task(void *pvParameters)
                                 
                                 // Check if pattern is completely destroyed
                                 if (game->pattern_length == 0) {
-                                    // Pattern destroyed! Start a new one
-                                    ESP_LOGI(TAG, "Pattern destroyed! Starting new pattern");
+                                    // Pattern destroyed! Level up and start a new one
+                                    game->level++;
+                                    ESP_LOGI(TAG, "Pattern destroyed! Level up to %lu", game->level);
+                                    
+                                    // Update game parameters for new level
+                                    update_game_parameters_for_level(game);
+                                    
+                                    // Set pattern length AFTER updating parameters
                                     game->pattern_length = game->pattern_size;
                                     game->pattern_position = game->led_count - 1;  // Reset to furthest LED
-                                    current_pattern_position = game->pattern_position;
                                     current_pattern_length = game->pattern_length;
                                     
+                                    ESP_LOGI(TAG, "Setting new pattern: pattern_size=%zu, pattern_length=%zu", 
+                                             game->pattern_size, game->pattern_length);
+                                    
                                     // Fill pattern with new random colors
-                                    for (size_t j = 0; j < game->pattern_length; j++) {
-                                        game->pattern[j] = (led_shooter_color_t)(esp_random() % 3);
+                                    if (game->pattern_length > 0 && game->pattern_length <= PATTERN_SIZE_MAX) {
+                                        for (size_t j = 0; j < game->pattern_length; j++) {
+                                            game->pattern[j] = (led_shooter_color_t)(esp_random() % 3);
+                                        }
+                                        ESP_LOGI(TAG, "New pattern initialized with %zu colors", game->pattern_length);
+                                        // Update current_pattern_length for remaining shots in this iteration
+                                        current_pattern_length = game->pattern_length;
+                                    } else {
+                                        ESP_LOGE(TAG, "ERROR: pattern_length=%zu is invalid! pattern_size=%zu, max=%d", 
+                                                 game->pattern_length, game->pattern_size, PATTERN_SIZE_MAX);
+                                        // Try to recover by setting to pattern_size
+                                        game->pattern_length = game->pattern_size;
+                                        if (game->pattern_length > 0 && game->pattern_length <= PATTERN_SIZE_MAX) {
+                                            for (size_t j = 0; j < game->pattern_length; j++) {
+                                                game->pattern[j] = (led_shooter_color_t)(esp_random() % 3);
+                                            }
+                                            current_pattern_length = game->pattern_length;
+                                            ESP_LOGI(TAG, "Recovered: pattern initialized with %zu colors", game->pattern_length);
+                                        }
                                     }
-                                    ESP_LOGI(TAG, "New pattern initialized with %zu colors", game->pattern_length);
                                 } else {
                                     // Move pattern forward (closer) to make it visually shorter
                                     // Only move if pattern still has LEDs and we're not at the end
                                     if (game->pattern_position > 0) {
                                         game->pattern_position--;
-                                        current_pattern_position = game->pattern_position;
                                     }
                                 }
                                 
@@ -340,12 +412,16 @@ esp_err_t led_shooter_game_init(const led_shooter_game_config_t *config, led_sho
     game->button_gpios[LED_SHOOTER_COLOR_GREEN] = config->button_green_gpio;
     game->button_gpios[LED_SHOOTER_COLOR_BLUE] = config->button_blue_gpio;
     game->led_count = led_strip_get_led_count(config->strip);
-    game->pattern_size = config->pattern_size ? config->pattern_size : PATTERN_SIZE_DEFAULT;
-    game->pattern_move_interval_ms = config->pattern_move_interval_ms ? config->pattern_move_interval_ms : PATTERN_MOVE_INTERVAL_MS_DEFAULT;
-    game->shot_speed_ms = config->shot_speed_ms ? config->shot_speed_ms : SHOT_SPEED_MS_DEFAULT;
+    game->base_pattern_size = config->pattern_size ? config->pattern_size : PATTERN_SIZE_DEFAULT;
+    game->base_pattern_speed_ms = config->pattern_move_interval_ms ? config->pattern_move_interval_ms : PATTERN_MOVE_INTERVAL_MS_DEFAULT;
+    game->base_shot_speed_ms = config->shot_speed_ms ? config->shot_speed_ms : SHOT_SPEED_MS_DEFAULT;
     game->brightness = config->brightness ? config->brightness : BRIGHTNESS_DEFAULT;
+    game->level = 1;
     game->active_shots = 0;
     game->running = false;
+    
+    // Initialize parameters for level 1
+    update_game_parameters_for_level(game);
     
     // Create button queue
     game->button_queue = xQueueCreate(10, sizeof(int));
@@ -536,6 +612,10 @@ esp_err_t led_shooter_game_reset(led_shooter_game_handle_t game)
         return ESP_ERR_INVALID_STATE;
     }
     
+    // Reset level to 1
+    game->level = 1;
+    update_game_parameters_for_level(game);
+    
     // Clear all active shots
     for (size_t i = 0; i < MAX_SHOTS; i++) {
         game->shots[i].position = -1;
@@ -552,7 +632,20 @@ esp_err_t led_shooter_game_reset(led_shooter_game_handle_t game)
         game->pattern[i] = (led_shooter_color_t)(esp_random() % 3);
     }
     
-    ESP_LOGI(TAG, "Game reset - new pattern initialized with %zu colors", game->pattern_length);
+    ESP_LOGI(TAG, "Game reset - level %lu, new pattern initialized with %zu colors", game->level, game->pattern_length);
+    return ESP_OK;
+}
+
+esp_err_t led_shooter_game_get_level(led_shooter_game_handle_t game, uint32_t *level)
+{
+    if (game == NULL || level == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    
+    // Read level directly from game structure
+    // No mutex needed as uint32_t read is atomic on ESP32
+    *level = game->level;
+    ESP_LOGD(TAG, "get_level called, returning level: %lu", *level);
     return ESP_OK;
 }
 

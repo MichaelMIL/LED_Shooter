@@ -5,12 +5,11 @@
  */
 #include <string.h>
 #include <stdlib.h>
+#include <inttypes.h>
 #include "web_interface.h"
 #include "esp_log.h"
 #include "esp_http_server.h"
 #include "led_shooter_game.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
 
 static const char *TAG = "web_interface";
 
@@ -93,10 +92,32 @@ static const char html_page[] =
 ".button-reset:hover {"
 "  background: linear-gradient(135deg, #6c757d 0%, #343a40 100%);"
 "}"
+".level-display {"
+"  position: absolute;"
+"  top: 20px;"
+"  right: 20px;"
+"  background: rgba(255, 255, 255, 0.2);"
+"  padding: 15px 25px;"
+"  border-radius: 10px;"
+"  color: white;"
+"  font-size: 24px;"
+"  font-weight: bold;"
+"  text-shadow: 2px 2px 4px rgba(0,0,0,0.3);"
+"  backdrop-filter: blur(10px);"
+"}"
+".level-label {"
+"  font-size: 14px;"
+"  opacity: 0.8;"
+"  margin-bottom: 5px;"
+"}"
 "</style>"
 "</head>"
 "<body>"
 "<button class='game-button button-reset' onclick='reset()'>Reset</button>"
+"<div class='level-display'>"
+"<div class='level-label'>LEVEL</div>"
+"<div id='level-value'>1</div>"
+"</div>"
 "<h1>LED Shooter Game</h1>"
 "<div class='button-container'>"
 "<button class='game-button button-red' onclick='shoot(1)'>Red</button>"
@@ -104,18 +125,67 @@ static const char html_page[] =
 "<button class='game-button button-blue' onclick='shoot(2)'>Blue</button>"
 "</div>"
 "<script>"
-"function shoot(color) {"
-"  fetch('/shoot?color=' + color, { method: 'POST' })"
-"    .then(response => response.text())"
-"    .then(data => console.log('Shot fired:', data))"
-"    .catch(error => console.error('Error:', error));"
-"}"
-"function reset() {"
-"  fetch('/reset', { method: 'POST' })"
-"    .then(response => response.text())"
-"    .then(data => console.log('Game reset:', data))"
-"    .catch(error => console.error('Error:', error));"
-"}"
+"(function() {"
+"  console.log('Script loaded');"
+"  function shoot(color) {"
+"    fetch('/shoot?color=' + color, { method: 'POST' })"
+"      .then(response => response.text())"
+"      .then(data => console.log('Shot fired:', data))"
+"      .catch(error => console.error('Error:', error));"
+"  }"
+"  function reset() {"
+"    fetch('/reset', { method: 'POST' })"
+"      .then(response => response.text())"
+"      .then(data => {"
+"        console.log('Game reset:', data);"
+"        updateLevel();"
+"      })"
+"      .catch(error => console.error('Error:', error));"
+"  }"
+"  function updateLevel() {"
+"    console.log('updateLevel called');"
+"    fetch('/level?t=' + Date.now(), {"
+"      method: 'GET',"
+"      cache: 'no-cache',"
+"      headers: {"
+"        'Cache-Control': 'no-cache',"
+"        'Pragma': 'no-cache'"
+"      }"
+"    })"
+"      .then(response => {"
+"        if (!response.ok) {"
+"          console.error('HTTP error:', response.status, response.statusText);"
+"          throw new Error('HTTP error ' + response.status);"
+"        }"
+"        return response.text();"
+"      })"
+"      .then(level => {"
+"        const levelElement = document.getElementById('level-value');"
+"        if (levelElement) {"
+"          const trimmedLevel = level.trim();"
+"          const currentLevel = levelElement.textContent.trim();"
+"          if (currentLevel !== trimmedLevel) {"
+"            levelElement.textContent = trimmedLevel;"
+"            console.log('Level updated to:', trimmedLevel);"
+"          }"
+"        } else {"
+"          console.error('Level element not found');"
+"        }"
+"      })"
+"      .catch(error => {"
+"        console.error('Error fetching level:', error);"
+"      });"
+"  }"
+"  window.shoot = shoot;"
+"  window.reset = reset;"
+"  window.updateLevel = updateLevel;"
+"  console.log('Setting up interval');"
+"  var levelUpdateInterval = setInterval(updateLevel, 1000);"
+"  console.log('Interval set, ID:', levelUpdateInterval);"
+"  console.log('Calling initial updateLevel');"
+"  updateLevel();"
+"  console.log('Script initialization complete');"
+"})();"
 "</script>"
 "</body>"
 "</html>";
@@ -190,6 +260,39 @@ static esp_err_t reset_post_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+/**
+ * @brief Handler for /level endpoint - returns current level
+ */
+static esp_err_t level_get_handler(httpd_req_t *req)
+{
+    web_interface_handle_t interface = (web_interface_handle_t)req->user_ctx;
+    if (interface == NULL || interface->game == NULL) {
+        ESP_LOGE(TAG, "Invalid interface or game handle");
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_sendstr(req, "Invalid state");
+        return ESP_FAIL;
+    }
+    
+    uint32_t level = 0;
+    esp_err_t ret = led_shooter_game_get_level(interface->game, &level);
+    if (ret == ESP_OK) {
+        char level_str[16];
+        snprintf(level_str, sizeof(level_str), "%" PRIu32, level);
+        httpd_resp_set_type(req, "text/plain");
+        httpd_resp_set_hdr(req, "Cache-Control", "no-cache, no-store, must-revalidate");
+        httpd_resp_set_hdr(req, "Pragma", "no-cache");
+        httpd_resp_set_hdr(req, "Expires", "0");
+        httpd_resp_sendstr(req, level_str);
+        ESP_LOGI(TAG, "Level requested: %lu (returning: %s)", level, level_str);
+        return ESP_OK;
+    } else {
+        ESP_LOGE(TAG, "Failed to get level: %s", esp_err_to_name(ret));
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        httpd_resp_sendstr(req, "Failed to get level");
+        return ESP_FAIL;
+    }
+}
+
 esp_err_t web_interface_init(const web_interface_config_t *config, web_interface_handle_t *ret_interface)
 {
     if (config == NULL || ret_interface == NULL) {
@@ -249,6 +352,14 @@ esp_err_t web_interface_init(const web_interface_config_t *config, web_interface
         .user_ctx = interface
     };
     httpd_register_uri_handler(interface->server, &reset_uri);
+    
+    httpd_uri_t level_uri = {
+        .uri = "/level",
+        .method = HTTP_GET,
+        .handler = level_get_handler,
+        .user_ctx = interface
+    };
+    httpd_register_uri_handler(interface->server, &level_uri);
     
     *ret_interface = interface;
     ESP_LOGI(TAG, "Web interface started on port %d", interface->port);
