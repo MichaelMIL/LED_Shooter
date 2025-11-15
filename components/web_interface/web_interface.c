@@ -171,20 +171,11 @@ static esp_err_t reset_post_handler(httpd_req_t *req)
 {
     web_interface_handle_t interface = (web_interface_handle_t)req->user_ctx;
     
-    // Stop and restart the game to reset it
-    esp_err_t ret = led_shooter_game_stop(interface->game);
+    // Reset the game (resets pattern and clears shots without stopping tasks)
+    esp_err_t ret = led_shooter_game_reset(interface->game);
     if (ret != ESP_OK) {
         httpd_resp_set_status(req, "500 Internal Server Error");
-        httpd_resp_sendstr(req, "Failed to stop game");
-        return ESP_FAIL;
-    }
-    
-    vTaskDelay(pdMS_TO_TICKS(100));  // Small delay
-    
-    ret = led_shooter_game_start(interface->game);
-    if (ret != ESP_OK) {
-        httpd_resp_set_status(req, "500 Internal Server Error");
-        httpd_resp_sendstr(req, "Failed to start game");
+        httpd_resp_sendstr(req, "Failed to reset game");
         return ESP_FAIL;
     }
     

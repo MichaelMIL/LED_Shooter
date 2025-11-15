@@ -177,30 +177,46 @@ static void game_task(void *pvParameters)
         // Pattern no longer grows automatically - it only shrinks on matches
         // Initial pattern is filled at game start, then only decreases on successful matches
         
-        // Move pattern closer every interval
-        if (now - last_pattern_move >= pdMS_TO_TICKS(game->pattern_move_interval_ms)) {
-            if (game->pattern_position > 0) {
-                game->pattern_position--;
-            }
-            last_pattern_move = now;
-        }
-        
         // Move all active shots towards pattern
         if (now - last_shot_move >= pdMS_TO_TICKS(game->shot_speed_ms)) {
+            // First pass: move all shots and check for collisions
+            // Store pattern state at the start to avoid race conditions
+            size_t current_pattern_position = game->pattern_position;
+            size_t current_pattern_length = game->pattern_length;
+            
+            // Move all shots first
             for (size_t i = 0; i < MAX_SHOTS; i++) {
                 if (game->shots[i].position >= 0) {
                     game->shots[i].position++;
                     
+                    // Check if shot went off the strip
+                    if (game->shots[i].position >= (int)game->led_count) {
+                        game->shots[i].position = -1;
+                        game->shots[i].color = LED_SHOOTER_COLOR_NONE;
+                        game->active_shots--;
+                    }
+                }
+            }
+            
+            // Second pass: process all collisions using the stored pattern state
+            // This ensures all shots hitting at the same time are checked against the same pattern
+            // Use current game pattern_position (may have changed) for collision detection
+            for (size_t i = 0; i < MAX_SHOTS; i++) {
+                if (game->shots[i].position >= 0 && current_pattern_length > 0) {
                     // Check if shot reached the pattern
                     // Pattern fills from furthest to closest, so closest LED is at pattern_position
                     // Pattern array: pattern[0] is furthest, pattern[pattern_length-1] is closest
-                    if (game->shots[i].position >= (int)game->pattern_position && game->pattern_length > 0) {
-                        // Shot reached the closest LED of the pattern
-                        if (game->shots[i].position == (int)game->pattern_position) {
+                    // Use current pattern position (may have moved) for accurate collision detection
+                    int shot_pos = game->shots[i].position;
+                    int pattern_pos = (int)game->pattern_position;  // Use current position, not stored
+                    
+                    if (shot_pos >= pattern_pos) {
+                        // Shot reached or passed the pattern
+                        // Check if shot is at the pattern position (exact match or within 1 due to timing)
+                        if (shot_pos == pattern_pos || shot_pos == pattern_pos + 1) {
                             // Check if shot matches the closest LED (last in pattern array)
-                            size_t closest_pattern_index = game->pattern_length - 1;
+                            size_t closest_pattern_index = current_pattern_length - 1;
                             if (game->shots[i].color == game->pattern[closest_pattern_index]) {
-                            // if (1) {
                                 // Match! Remove both and make pattern shorter
                                 ESP_LOGI(TAG, "Match! Removing closest color, pattern length: %zu -> %zu", 
                                          game->pattern_length, game->pattern_length - 1);
@@ -208,12 +224,17 @@ static void game_task(void *pvParameters)
                                 // Remove closest LED from pattern
                                 game->pattern_length--;
                                 
+                                // Update stored pattern state for subsequent shots in this iteration
+                                current_pattern_length = game->pattern_length;
+                                
                                 // Check if pattern is completely destroyed
                                 if (game->pattern_length == 0) {
                                     // Pattern destroyed! Start a new one
                                     ESP_LOGI(TAG, "Pattern destroyed! Starting new pattern");
                                     game->pattern_length = game->pattern_size;
                                     game->pattern_position = game->led_count - 1;  // Reset to furthest LED
+                                    current_pattern_position = game->pattern_position;
+                                    current_pattern_length = game->pattern_length;
                                     
                                     // Fill pattern with new random colors
                                     for (size_t j = 0; j < game->pattern_length; j++) {
@@ -225,6 +246,7 @@ static void game_task(void *pvParameters)
                                     // Only move if pattern still has LEDs and we're not at the end
                                     if (game->pattern_position > 0) {
                                         game->pattern_position--;
+                                        current_pattern_position = game->pattern_position;
                                     }
                                 }
                                 
@@ -239,21 +261,24 @@ static void game_task(void *pvParameters)
                                 game->shots[i].color = LED_SHOOTER_COLOR_NONE;
                                 game->active_shots--;
                             }
-                        } else if (game->shots[i].position > (int)game->pattern_position) {
+                        } else if (shot_pos > pattern_pos + 1) {
                             // Shot passed pattern - disappear
                             game->shots[i].position = -1;
                             game->shots[i].color = LED_SHOOTER_COLOR_NONE;
                             game->active_shots--;
                         }
-                    } else if (game->shots[i].position >= (int)game->led_count) {
-                        // Shot went off the strip
-                        game->shots[i].position = -1;
-                        game->shots[i].color = LED_SHOOTER_COLOR_NONE;
-                        game->active_shots--;
                     }
                 }
             }
             last_shot_move = now;
+        }
+        
+        // Move pattern closer every interval (after shot processing to avoid missing collisions)
+        if (now - last_pattern_move >= pdMS_TO_TICKS(game->pattern_move_interval_ms)) {
+            if (game->pattern_position > 0) {
+                game->pattern_position--;
+            }
+            last_pattern_move = now;
         }
         
         // Update LED display
@@ -440,15 +465,28 @@ esp_err_t led_shooter_game_stop(led_shooter_game_handle_t game)
     // Wait a bit for tasks to finish current operations
     vTaskDelay(pdMS_TO_TICKS(100));
     
-    // Delete tasks
+    // Delete tasks - wait for them to finish first
+    // Tasks will exit when they see running = false
+    // Give them time to exit gracefully
+    vTaskDelay(pdMS_TO_TICKS(200));
+    
+    // Only delete if tasks haven't deleted themselves
     if (game->game_task_handle != NULL) {
-        vTaskDelete(game->game_task_handle);
+        TaskHandle_t task_handle = game->game_task_handle;
         game->game_task_handle = NULL;
+        // Check if task still exists before deleting
+        if (eTaskGetState(task_handle) != eDeleted) {
+            vTaskDelete(task_handle);
+        }
     }
     
     if (game->button_task_handle != NULL) {
-        vTaskDelete(game->button_task_handle);
+        TaskHandle_t task_handle = game->button_task_handle;
         game->button_task_handle = NULL;
+        // Check if task still exists before deleting
+        if (eTaskGetState(task_handle) != eDeleted) {
+            vTaskDelete(task_handle);
+        }
     }
     
     // Clear display
@@ -486,5 +524,35 @@ esp_err_t led_shooter_game_trigger_shot(led_shooter_game_handle_t game, led_shoo
     
     ESP_LOGW(TAG, "No available shot slots");
     return ESP_ERR_NO_MEM;
+}
+
+esp_err_t led_shooter_game_reset(led_shooter_game_handle_t game)
+{
+    if (game == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    
+    if (!game->running) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    
+    // Clear all active shots
+    for (size_t i = 0; i < MAX_SHOTS; i++) {
+        game->shots[i].position = -1;
+        game->shots[i].color = LED_SHOOTER_COLOR_NONE;
+    }
+    game->active_shots = 0;
+    
+    // Reset pattern
+    game->pattern_length = game->pattern_size;
+    game->pattern_position = game->led_count - 1;  // Reset to furthest LED
+    
+    // Fill pattern with new random colors
+    for (size_t i = 0; i < game->pattern_length; i++) {
+        game->pattern[i] = (led_shooter_color_t)(esp_random() % 3);
+    }
+    
+    ESP_LOGI(TAG, "Game reset - new pattern initialized with %zu colors", game->pattern_length);
+    return ESP_OK;
 }
 

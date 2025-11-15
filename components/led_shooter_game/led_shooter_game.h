@@ -98,6 +98,16 @@ esp_err_t led_shooter_game_stop(led_shooter_game_handle_t game);
  */
 esp_err_t led_shooter_game_trigger_shot(led_shooter_game_handle_t game, led_shooter_color_t color);
 
+/**
+ * @brief Reset the game (restart pattern without stopping tasks)
+ *
+ * @param game Game handle
+ * @return
+ *      - ESP_OK: Success
+ *      - ESP_ERR_INVALID_ARG: Invalid argument
+ */
+esp_err_t led_shooter_game_reset(led_shooter_game_handle_t game);
+
 #ifdef __cplusplus
 }
 #endif
