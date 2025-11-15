@@ -1,0 +1,41 @@
+# LED Shooter Project - ESP-IDF
+
+This is an ESP-IDF v5.5 project for controlling WS2812 LED strips on ESP32.
+
+## Project Structure
+
+- `components/led_strip/` - Reusable LED strip component
+  - `led_strip.h` - Public API header
+  - `led_strip.c` - Implementation with RMT driver
+  - Supports WS2812 LED strips via RMT peripheral
+  - Includes rainbow chase animation as a FreeRTOS task
+
+- `main/` - Main application code
+  - `main.c` - Application entry point
+
+## Key Features
+
+- LED strip control with brightness support
+- Rainbow chase animation running as FreeRTOS task
+- RMT-based WS2812 protocol implementation
+- Component-based architecture for reusability
+
+## Coding Standards
+
+- Use ESP-IDF error handling (ESP_ERROR_CHECK)
+- Follow ESP-IDF naming conventions
+- Use FreeRTOS tasks for background operations
+- Include proper error checking and logging
+- Use ESP_LOGI/ESP_LOGE for logging
+
+## Build System
+
+- ESP-IDF v5.5
+- CMake build system
+- Target: ESP32
+
+## Dependencies
+
+- `esp_driver_rmt` - RMT driver for LED control
+- FreeRTOS - For task management
+
